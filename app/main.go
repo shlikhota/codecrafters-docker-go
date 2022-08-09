@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
@@ -34,8 +33,7 @@ func main() {
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		os.Exit(exitErr.ExitCode())
 	} else if err != nil {
-		fmt.Printf("Err: %v", err)
-		os.Exit(1)
+		log.Fatal(err)
 	}
 }
 
@@ -49,7 +47,6 @@ func copyFile(sourceFilepath, destinationPath string) error {
 
 	destinationFilepath := path.Join(destinationPath, sourceFilepath)
 	os.MkdirAll(path.Dir(destinationFilepath), 0750)
-	fmt.Printf("Copy file from %s to %s\n", sourceFilepath, destinationFilepath)
 	destinationFile, err := os.OpenFile(destinationFilepath, os.O_RDWR|os.O_CREATE, stat.Mode())
 	if err != nil {
 		return err
