@@ -12,13 +12,25 @@ import (
 
 // Usage: your_docker.sh run <image> <command> <arg1> <arg2> ...
 func main() {
+	dockerImage := os.Args[2]
 	command := os.Args[3]
 	args := os.Args[4:len(os.Args)]
 
 	chrootDir, _ := ioutil.TempDir("", "")
-	if err := copyFile(command, chrootDir); err != nil {
-		log.Fatal(err)
+
+	if docker, err := CreateDocker(dockerImage); docker != nil {
+		layers, err := docker.Pull("./")
+		if err != nil {
+			log.Fatalln(err)
+		} else {
+			for _, layerFile := range *layers {
+				extractTar(layerFile, chrootDir)
+			}
+		}
+	} else {
+		log.Fatalln(err)
 	}
+
 	if err := createDevNullFile(chrootDir); err != nil {
 		log.Fatal(err)
 	}
@@ -67,4 +79,9 @@ func createDevNullFile(destinationDir string) error {
 	}
 
 	return ioutil.WriteFile(path.Join(destinationDir, "dev", "null"), []byte{}, 0644)
+}
+
+func extractTar(archiveFilename, destination string) error {
+	cmd := exec.Command("tar", []string{"xf", archiveFilename, "-C", destination}...)
+	return cmd.Run()
 }
