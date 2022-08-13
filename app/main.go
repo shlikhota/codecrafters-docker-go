@@ -1,41 +1,38 @@
 package main
 
 import (
-	"io"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
 	"path"
 	"syscall"
+
+	"docker/registry"
 )
 
 // Usage: your_docker.sh run <image> <command> <arg1> <arg2> ...
 func main() {
+	if len(os.Args) < 4 {
+		fmt.Println(`Usage:
+	your_docker run <image> <command> <arg1> <arg2> ...
+		`)
+		os.Exit(1)
+	}
+
 	dockerImage := os.Args[2]
 	command := os.Args[3]
 	args := os.Args[4:len(os.Args)]
 
 	chrootDir, _ := ioutil.TempDir("", "")
 
-	if docker, err := CreateDocker(dockerImage); docker != nil {
-		layers, err := docker.Pull("./")
-		if err != nil {
-			log.Fatalln(err)
-		} else {
-			for _, layerFile := range *layers {
-				extractTar(layerFile, chrootDir)
-			}
-		}
-	} else {
-		log.Fatalln(err)
-	}
+	docker, err := registry.CreateDocker(dockerImage)
+	must(err)
+	must(docker.Pull(chrootDir))
 
-	if err := createDevNullFile(chrootDir); err != nil {
-		log.Fatal(err)
-	}
-
-	syscall.Chroot(chrootDir)
+	must(createDevNullFile(chrootDir))
+	must(syscall.Chroot(chrootDir))
 
 	cmd := exec.Command(command, args...)
 	cmd.Stdout = os.Stdout
@@ -45,7 +42,7 @@ func main() {
 		Cloneflags: syscall.CLONE_NEWPID, // linux only
 	}
 
-	err := cmd.Run()
+	err = cmd.Run()
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		os.Exit(exitErr.ExitCode())
 	} else if err != nil {
@@ -53,24 +50,10 @@ func main() {
 	}
 }
 
-func copyFile(sourceFilepath, destinationPath string) error {
-	sourceFile, err := os.Open(sourceFilepath)
+func must(err error) {
 	if err != nil {
-		return err
+		log.Fatalln(err)
 	}
-	defer sourceFile.Close()
-	stat, _ := sourceFile.Stat()
-
-	destinationFilepath := path.Join(destinationPath, sourceFilepath)
-	os.MkdirAll(path.Dir(destinationFilepath), 0750)
-	destinationFile, err := os.OpenFile(destinationFilepath, os.O_RDWR|os.O_CREATE, stat.Mode())
-	if err != nil {
-		return err
-	}
-	defer destinationFile.Close()
-
-	_, err = io.Copy(destinationFile, sourceFile)
-	return err
 }
 
 func createDevNullFile(destinationDir string) error {
@@ -78,10 +61,5 @@ func createDevNullFile(destinationDir string) error {
 		return err
 	}
 
-	return ioutil.WriteFile(path.Join(destinationDir, "dev", "null"), []byte{}, 0644)
-}
-
-func extractTar(archiveFilename, destination string) error {
-	cmd := exec.Command("tar", []string{"xf", archiveFilename, "-C", destination}...)
-	return cmd.Run()
+	return os.WriteFile(path.Join(destinationDir, "dev", "null"), []byte{}, 0644)
 }

@@ -1,25 +1,24 @@
-package main
+package registry
 
 import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
-	"path"
+	"os/exec"
 	"strings"
 )
+
+type Docker struct {
+	authToken string
+	image     image
+}
 
 type image struct {
 	repository string
 	reference  string
 	manifest   imageManifestResponse
-}
-
-type Docker struct {
-	authToken string
-	image     image
 }
 
 type authResponse struct {
@@ -38,7 +37,7 @@ const dockerAuthUrl string = "https://auth.docker.io/token?service=registry.dock
 func CreateDocker(dockerImage string) (*Docker, error) {
 	imageName := dockerImage
 	tag := "latest"
-	if strings.Index(dockerImage, ":") != -1 {
+	if strings.Contains(dockerImage, ":") {
 		imageName = dockerImage[0:strings.Index(dockerImage, ":")]
 		tag = dockerImage[strings.Index(dockerImage, ":")+1:]
 	}
@@ -64,10 +63,10 @@ func (d *Docker) auth() error {
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("auth status code: %d\n", response.StatusCode)
+		return fmt.Errorf("auth status code: %d", response.StatusCode)
 	}
 
-	respBody, err := ioutil.ReadAll(response.Body)
+	respBody, err := io.ReadAll(response.Body)
 	if err != nil {
 		return err
 	}
@@ -93,13 +92,13 @@ func (d *Docker) fetchImageManifest() error {
 	}
 	defer response.Body.Close()
 
-	respBody, err := ioutil.ReadAll(response.Body)
+	respBody, err := io.ReadAll(response.Body)
 	if err != nil {
 		return err
 	}
 
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch image manifest status code: %d\n", response.StatusCode)
+		return fmt.Errorf("fetch image manifest status code: %d", response.StatusCode)
 	}
 
 	manifestResponse := imageManifestResponse{}
@@ -112,8 +111,7 @@ func (d *Docker) fetchImageManifest() error {
 	return nil
 }
 
-func (d *Docker) Pull(destination string) (*[]string, error) {
-	var files []string
+func (d *Docker) Pull(destination string) error {
 	for _, layer := range d.image.manifest.FsLayers {
 		url := fmt.Sprintf("https://%s/v2/%s/blobs/%s", baseDockerHubUrl, d.image.manifest.Name, layer["blobSum"])
 		req, _ := http.NewRequest(http.MethodGet, url, nil)
@@ -122,22 +120,30 @@ func (d *Docker) Pull(destination string) (*[]string, error) {
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			return nil, err
+			return err
 		}
+		defer resp.Body.Close()
 
-		layerFilename := path.Join(destination, layer["blobSum"]+".tar.gz")
+		layerFilename := layer["blobSum"] + ".tar.gz"
 		layerFile, err := os.OpenFile(layerFilename, os.O_RDWR|os.O_CREATE, 0750)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer layerFile.Close()
 
-		_, err = io.Copy(layerFile, resp.Body)
-		if err != nil {
-			return nil, err
+		if _, err = io.Copy(layerFile, resp.Body); err != nil {
+			return err
 		}
 
-		files = append(files, path.Join(destination, layerFile.Name()))
+		if err := extractTar(layerFile.Name(), destination); err != nil {
+			return err
+		}
 	}
-	return &files, nil
+
+	return nil
+}
+
+func extractTar(archiveFilename, destination string) error {
+	cmd := exec.Command("tar", []string{"xf", archiveFilename, "-C", destination}...)
+	return cmd.Run()
 }
