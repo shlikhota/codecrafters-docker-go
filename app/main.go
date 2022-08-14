@@ -2,12 +2,9 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
-	"path"
-	"syscall"
 
 	"docker/registry"
 )
@@ -25,41 +22,16 @@ func main() {
 	command := os.Args[3]
 	args := os.Args[4:len(os.Args)]
 
-	chrootDir, _ := ioutil.TempDir("", "")
-
 	docker, err := registry.CreateDocker(dockerImage)
 	must(err)
-	must(docker.Pull(chrootDir))
+	must(docker.Pull())
+	must(docker.Run(command, args...))
+}
 
-	must(createDevNullFile(chrootDir))
-	must(syscall.Chroot(chrootDir))
-
-	cmd := exec.Command(command, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWPID, // linux only
-	}
-
-	err = cmd.Run()
+func must(err error) {
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		os.Exit(exitErr.ExitCode())
 	} else if err != nil {
 		log.Fatal(err)
 	}
-}
-
-func must(err error) {
-	if err != nil {
-		log.Fatalln(err)
-	}
-}
-
-func createDevNullFile(destinationDir string) error {
-	if err := os.MkdirAll(path.Join(destinationDir, "dev"), 0750); err != nil {
-		return err
-	}
-
-	return os.WriteFile(path.Join(destinationDir, "dev", "null"), []byte{}, 0644)
 }

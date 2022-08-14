@@ -7,12 +7,17 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"strings"
+	"syscall"
 )
 
 type Docker struct {
 	authToken string
 	image     image
+	chrootDir string
+	stdout    io.Writer
+	stderr    io.Writer
 }
 
 type image struct {
@@ -42,14 +47,17 @@ func CreateDocker(dockerImage string) (*Docker, error) {
 		tag = dockerImage[strings.Index(dockerImage, ":")+1:]
 	}
 	imageName = fmt.Sprintf("library/%s", imageName)
-	docker := &Docker{image: image{repository: imageName, reference: tag}}
+	chrootDir, err := os.MkdirTemp("", "")
+	if err != nil {
+		return nil, err
+	}
+	docker := &Docker{image: image{repository: imageName, reference: tag}, chrootDir: chrootDir}
 	if err := docker.auth(); err != nil {
 		return nil, err
 	}
 
-	if err := docker.fetchImageManifest(); err != nil {
-		return nil, err
-	}
+	docker.stderr = os.Stderr
+	docker.stdout = os.Stdout
 
 	return docker, nil
 }
@@ -111,7 +119,10 @@ func (d *Docker) fetchImageManifest() error {
 	return nil
 }
 
-func (d *Docker) Pull(destination string) error {
+func (d *Docker) Pull() error {
+	if err := d.fetchImageManifest(); err != nil {
+		return err
+	}
 	for _, layer := range d.image.manifest.FsLayers {
 		url := fmt.Sprintf("https://%s/v2/%s/blobs/%s", baseDockerHubUrl, d.image.manifest.Name, layer["blobSum"])
 		req, _ := http.NewRequest(http.MethodGet, url, nil)
@@ -135,12 +146,50 @@ func (d *Docker) Pull(destination string) error {
 			return err
 		}
 
-		if err := extractTar(layerFile.Name(), destination); err != nil {
+		if err := extractTar(layerFile.Name(), d.chrootDir); err != nil {
 			return err
 		}
+
+		os.Remove(layerFile.Name())
 	}
 
 	return nil
+}
+
+func (d *Docker) SetStdout(writer io.Writer) {
+	d.stdout = writer
+}
+
+func (d *Docker) SetStderr(writer io.Writer) {
+	d.stderr = writer
+}
+
+func (d *Docker) Run(command string, args ...string) error {
+	if err := createDevNullFile(d.chrootDir); err != nil {
+		return err
+	}
+
+	if err := syscall.Chroot(d.chrootDir); err != nil {
+		return err
+	}
+
+	cmd := exec.Command(command, args...)
+	cmd.Stdout = d.stdout
+	cmd.Stderr = d.stderr
+
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags: syscall.CLONE_NEWPID, // linux only
+	}
+
+	return cmd.Run()
+}
+
+func createDevNullFile(destinationDir string) error {
+	if err := os.MkdirAll(path.Join(destinationDir, "dev"), 0750); err != nil {
+		return err
+	}
+
+	return os.WriteFile(path.Join(destinationDir, "dev", "null"), []byte{}, 0644)
 }
 
 func extractTar(archiveFilename, destination string) error {
